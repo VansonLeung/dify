@@ -10,6 +10,7 @@ import TypeSelector from '@/app/components/workflow/nodes/_base/components/selec
 import { PromptRole } from '@/models/debug'
 import { useWorkflowStore } from '../../../store'
 import { EditionType } from '../../../types'
+import MultimodalContentEditor from './multimodal-content-editor'
 
 const i18nPrefix = 'nodes.llm'
 
@@ -27,6 +28,7 @@ type Props = {
   payload: PromptItem
   handleChatModeMessageRoleChange: (role: PromptRole) => void
   onPromptChange: (p: string) => void
+  onContentChange: (content: NonNullable<PromptItem['content']>) => void
   onEditionTypeChange: (editionType: EditionType) => void
   onRemove: () => void
   isShowContext: boolean
@@ -73,6 +75,7 @@ const ConfigPromptItem: FC<Props> = ({
   isChatApp,
   payload,
   onPromptChange,
+  onContentChange,
   onEditionTypeChange,
   onRemove,
   isShowContext,
@@ -95,61 +98,74 @@ const ConfigPromptItem: FC<Props> = ({
   }, [onPromptChange, setControlPromptEditorRerenderKey])
 
   return (
-    <Editor
-      className={className}
-      headerClassName={headerClassName}
-      instanceId={instanceId}
-      key={instanceId}
-      title={(
-        <div className="relative left-1 flex items-center">
-          {payload.role === PromptRole.system
-            ? (
-                <div className="relative left-[-4px] text-xs font-semibold uppercase text-text-secondary">
-                  SYSTEM
-                </div>
-              )
-            : (
-                <TypeSelector
-                  value={payload.role as string}
-                  allOptions={roleOptions}
-                  options={canNotChooseSystemRole ? roleOptionsWithoutSystemRole : roleOptions}
-                  onChange={handleChatModeMessageRoleChange}
-                  triggerClassName="text-xs font-semibold text-text-secondary uppercase"
-                  itemClassName="text-[13px] font-medium text-text-secondary"
-                />
-              )}
+    <div>
+      <Editor
+        className={className}
+        headerClassName={headerClassName}
+        instanceId={instanceId}
+        key={instanceId}
+        title={(
+          <div className="relative left-1 flex items-center">
+            {payload.role === PromptRole.system
+              ? (
+                  <div className="relative left-[-4px] text-xs font-semibold uppercase text-text-secondary">
+                    SYSTEM
+                  </div>
+                )
+              : (
+                  <TypeSelector
+                    value={payload.role as string}
+                    allOptions={roleOptions}
+                    options={canNotChooseSystemRole ? roleOptionsWithoutSystemRole : roleOptions}
+                    onChange={handleChatModeMessageRoleChange}
+                    triggerClassName="text-xs font-semibold text-text-secondary uppercase"
+                    itemClassName="text-[13px] font-medium text-text-secondary"
+                  />
+                )}
 
-          <Tooltip
-            popupContent={
-              <div className="max-w-[180px]">{!!payload.role && t(`${i18nPrefix}.roleDescription.${payload.role}`, { ns: 'workflow' })}</div>
-            }
-            triggerClassName="w-4 h-4"
-          />
-        </div>
+            <Tooltip
+              popupContent={
+                <div className="max-w-[180px]">{!!payload.role && t(`${i18nPrefix}.roleDescription.${payload.role}`, { ns: 'workflow' })}</div>
+              }
+              triggerClassName="w-4 h-4"
+            />
+          </div>
+        )}
+        value={payload.edition_type === EditionType.jinja2 ? (payload.jinja2_text || '') : payload.text}
+        onChange={onPromptChange}
+        readOnly={readOnly}
+        showRemove={canRemove}
+        onRemove={onRemove}
+        isChatModel={isChatModel}
+        isChatApp={isChatApp}
+        isShowContext={isShowContext}
+        hasSetBlockStatus={hasSetBlockStatus}
+        nodesOutputVars={availableVars}
+        availableNodes={availableNodes}
+        nodeId={nodeId}
+        editorId={id}
+        isSupportPromptGenerator
+        onGenerated={handleGenerated}
+        modelConfig={modelConfig}
+        isSupportJinja
+        editionType={payload.edition_type}
+        onEditionTypeChange={onEditionTypeChange}
+        varList={varList}
+        handleAddVariable={handleAddVariable}
+        isSupportFileVar
+      />
+      {(payload.role === PromptRole.user || payload.role === PromptRole.assistant) && (
+        <MultimodalContentEditor
+          readOnly={readOnly}
+          instanceId={instanceId}
+          value={payload.content}
+          nodesOutputVars={availableVars || []}
+          availableNodes={availableNodes || []}
+          isSupportFileVar
+          onChange={onContentChange}
+        />
       )}
-      value={payload.edition_type === EditionType.jinja2 ? (payload.jinja2_text || '') : payload.text}
-      onChange={onPromptChange}
-      readOnly={readOnly}
-      showRemove={canRemove}
-      onRemove={onRemove}
-      isChatModel={isChatModel}
-      isChatApp={isChatApp}
-      isShowContext={isShowContext}
-      hasSetBlockStatus={hasSetBlockStatus}
-      nodesOutputVars={availableVars}
-      availableNodes={availableNodes}
-      nodeId={nodeId}
-      editorId={id}
-      isSupportPromptGenerator
-      onGenerated={handleGenerated}
-      modelConfig={modelConfig}
-      isSupportJinja
-      editionType={payload.edition_type}
-      onEditionTypeChange={onEditionTypeChange}
-      varList={varList}
-      handleAddVariable={handleAddVariable}
-      isSupportFileVar
-    />
+    </div>
   )
 }
 export default React.memo(ConfigPromptItem)

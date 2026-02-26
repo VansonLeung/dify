@@ -251,12 +251,35 @@ export enum EditionType {
   jinja2 = 'jinja2',
 }
 
+export type OpenAICompatibleTextContentPart = {
+  type: 'text'
+  text: string
+}
+
+export type OpenAICompatibleImageURLContentPart = {
+  type: 'image_url'
+  image_url: {
+    url: string
+    detail?: 'auto' | 'low' | 'high'
+  }
+}
+
+export type OpenAICompatibleAudioURLContentPart = {
+  type: 'audio_url'
+  audio_url: {
+    url: string
+  }
+}
+
+export type OpenAICompatibleContentPart = OpenAICompatibleTextContentPart | OpenAICompatibleImageURLContentPart | OpenAICompatibleAudioURLContentPart
+
 export type PromptItem = {
   id?: string
   role?: PromptRole
   text: string
   edition_type?: EditionType
   jinja2_text?: string
+  content?: OpenAICompatibleContentPart[]
 }
 
 export enum MemoryRole {

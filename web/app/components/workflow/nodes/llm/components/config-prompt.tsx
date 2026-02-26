@@ -85,6 +85,15 @@ const ConfigPrompt: FC<Props> = ({
     }
   }, [onChange, payload])
 
+  const handleChatModeContentChange = useCallback((index: number) => {
+    return (content: NonNullable<PromptItem['content']>) => {
+      const newPrompt = produce(payload as PromptItem[], (draft) => {
+        draft[index].content = content
+      })
+      onChange(newPrompt)
+    }
+  }, [onChange, payload])
+
   const handleChatModeEditionTypeChange = useCallback((index: number) => {
     return (editionType: EditionType) => {
       const newPrompt = produce(payload as PromptItem[], (draft) => {
@@ -197,6 +206,7 @@ const ConfigPrompt: FC<Props> = ({
                             isChatApp={isChatApp}
                             payload={item}
                             onPromptChange={handleChatModePromptChange(index)}
+                            onContentChange={handleChatModeContentChange(index)}
                             onEditionTypeChange={handleChatModeEditionTypeChange(index)}
                             onRemove={handleRemove(index)}
                             isShowContext={isShowContext}

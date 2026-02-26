@@ -4,10 +4,12 @@ import base64
 import io
 import json
 import logging
+import mimetypes
 import re
 import time
 from collections.abc import Generator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlparse
 
 from sqlalchemy import select
 
@@ -18,6 +20,7 @@ from core.llm_generator.output_parser.structured_output import invoke_llm_with_s
 from core.memory.token_buffer_memory import TokenBufferMemory
 from core.model_manager import ModelInstance, ModelManager
 from core.model_runtime.entities import (
+    AudioPromptMessageContent,
     ImagePromptMessageContent,
     PromptMessage,
     PromptMessageContentType,
@@ -87,6 +90,9 @@ from .entities import (
     LLMNodeCompletionModelPromptTemplate,
     LLMNodeData,
     ModelConfig,
+    OpenAICompatibleChatAudioURLContentPart,
+    OpenAICompatibleChatImageURLContentPart,
+    OpenAICompatibleChatTextContentPart,
 )
 from .exc import (
     InvalidContextStructureError,
@@ -634,6 +640,16 @@ class LLMNode(Node[LLMNodeData]):
             for prompt in prompt_template:
                 variable_template_parser = VariableTemplateParser(template=prompt.text)
                 variable_selectors.extend(variable_template_parser.extract_variable_selectors())
+                for content_part in prompt.content:
+                    if isinstance(content_part, OpenAICompatibleChatTextContentPart):
+                        variable_template_parser = VariableTemplateParser(template=content_part.text)
+                        variable_selectors.extend(variable_template_parser.extract_variable_selectors())
+                    elif isinstance(content_part, OpenAICompatibleChatImageURLContentPart):
+                        variable_template_parser = VariableTemplateParser(template=content_part.image_url.url)
+                        variable_selectors.extend(variable_template_parser.extract_variable_selectors())
+                    elif isinstance(content_part, OpenAICompatibleChatAudioURLContentPart):
+                        variable_template_parser = VariableTemplateParser(template=content_part.audio_url.url)
+                        variable_selectors.extend(variable_template_parser.extract_variable_selectors())
         elif isinstance(prompt_template, CompletionModelPromptTemplate):
             variable_template_parser = VariableTemplateParser(template=prompt_template.text)
             variable_selectors = variable_template_parser.extract_variable_selectors()
@@ -999,6 +1015,16 @@ class LLMNode(Node[LLMNodeData]):
                 if prompt.edition_type != "jinja2":
                     variable_template_parser = VariableTemplateParser(template=prompt.text)
                     variable_selectors.extend(variable_template_parser.extract_variable_selectors())
+                    for content_part in prompt.content:
+                        if isinstance(content_part, OpenAICompatibleChatTextContentPart):
+                            variable_template_parser = VariableTemplateParser(template=content_part.text)
+                            variable_selectors.extend(variable_template_parser.extract_variable_selectors())
+                        elif isinstance(content_part, OpenAICompatibleChatImageURLContentPart):
+                            variable_template_parser = VariableTemplateParser(template=content_part.image_url.url)
+                            variable_selectors.extend(variable_template_parser.extract_variable_selectors())
+                        elif isinstance(content_part, OpenAICompatibleChatAudioURLContentPart):
+                            variable_template_parser = VariableTemplateParser(template=content_part.audio_url.url)
+                            variable_selectors.extend(variable_template_parser.extract_variable_selectors())
         elif isinstance(prompt_template, LLMNodeCompletionModelPromptTemplate):
             if prompt_template.edition_type != "jinja2":
                 variable_template_parser = VariableTemplateParser(template=prompt_template.text)
@@ -1073,6 +1099,167 @@ class LLMNode(Node[LLMNodeData]):
         }
 
     @staticmethod
+    def _extract_file_contents_from_segment_group(
+        *,
+        segment_group: Any,
+        vision_detail_config: ImagePromptMessageContent.DETAIL,
+    ) -> list[PromptMessageContentUnionTypes]:
+        file_contents: list[PromptMessageContentUnionTypes] = []
+        for segment in segment_group.value:
+            if isinstance(segment, ArrayFileSegment):
+                for file in segment.value:
+                    if file.type in {FileType.IMAGE, FileType.VIDEO, FileType.AUDIO, FileType.DOCUMENT}:
+                        file_content = file_manager.to_prompt_message_content(
+                            file, 
+                            image_detail_config=vision_detail_config
+                        )
+                        file_contents.append(file_content)
+            elif isinstance(segment, FileSegment):
+                file = segment.value
+                if file.type in {FileType.IMAGE, FileType.VIDEO, FileType.AUDIO, FileType.DOCUMENT}:
+                    file_content = file_manager.to_prompt_message_content(
+                        file, 
+                        image_detail_config=vision_detail_config
+                    )
+                    file_contents.append(file_content)
+        return file_contents
+
+    @staticmethod
+    def _guess_media_format_and_mime_type(url: str, media_type: Literal["image", "audio"]) -> tuple[str, str]:
+        guessed_mime_type, _ = mimetypes.guess_type(url)
+        if guessed_mime_type and guessed_mime_type.startswith(f"{media_type}/"):
+            media_format = guessed_mime_type.split("/")[-1]
+            return media_format, guessed_mime_type
+
+        parsed_url = urlparse(url)
+        path = parsed_url.path.lower()
+        if media_type == "image":
+            for extension in ("png", "jpg", "jpeg", "webp", "gif", "bmp", "tiff"):
+                if path.endswith(f".{extension}"):
+                    mime_type = "image/jpeg" if extension in {"jpg", "jpeg"} else f"image/{extension}"
+                    return extension, mime_type
+            return "png", "image/png"
+
+        for extension in ("mp3", "wav", "ogg", "m4a", "aac", "flac", "webm"):
+            if path.endswith(f".{extension}"):
+                return extension, f"audio/{extension}"
+        return "mp3", "audio/mpeg"
+
+    @staticmethod
+    def _guess_image_format_and_mime_type(url: str) -> tuple[str, str]:
+        return LLMNode._guess_media_format_and_mime_type(url, "image")
+
+    @staticmethod
+    def _guess_audio_format_and_mime_type(url: str) -> tuple[str, str]:
+        return LLMNode._guess_media_format_and_mime_type(url, "audio")
+
+    @classmethod
+    def _convert_template_to_contents(
+        cls,
+        *,
+        template: str,
+        context: str | None,
+        variable_pool: VariablePool,
+        vision_detail_config: ImagePromptMessageContent.DETAIL,
+    ) -> list[PromptMessageContentUnionTypes]:
+        if context:
+            template = template.replace("{#context#}", context)
+
+        segment_group = variable_pool.convert_template(template)
+        prompt_contents: list[PromptMessageContentUnionTypes] = []
+
+        if segment_group.text:
+            prompt_contents.append(TextPromptMessageContent(data=segment_group.text))
+
+        prompt_contents.extend(
+            cls._extract_file_contents_from_segment_group(
+                segment_group=segment_group,
+                vision_detail_config=vision_detail_config,
+            )
+        )
+
+        return prompt_contents
+
+    @classmethod
+    def _convert_openai_content_parts_to_contents(
+        cls,
+        *,
+        message: LLMNodeChatModelMessage,
+        context: str | None,
+        variable_pool: VariablePool,
+        vision_detail_config: ImagePromptMessageContent.DETAIL,
+    ) -> list[PromptMessageContentUnionTypes]:
+        prompt_contents: list[PromptMessageContentUnionTypes] = []
+        for content_part in message.content:
+            if isinstance(content_part, OpenAICompatibleChatTextContentPart):
+                prompt_contents.extend(
+                    cls._convert_template_to_contents(
+                        template=content_part.text,
+                        context=context,
+                        variable_pool=variable_pool,
+                        vision_detail_config=vision_detail_config,
+                    )
+                )
+                continue
+
+            if not isinstance(content_part, OpenAICompatibleChatImageURLContentPart):
+                if not isinstance(content_part, OpenAICompatibleChatAudioURLContentPart):
+                    continue
+
+                segment_group = variable_pool.convert_template(content_part.audio_url.url)
+                file_contents = cls._extract_file_contents_from_segment_group(
+                    segment_group=segment_group,
+                    vision_detail_config=vision_detail_config,
+                )
+                if file_contents:
+                    prompt_contents.extend(file_contents)
+                    continue
+
+                audio_url = segment_group.text.strip()
+                if not audio_url:
+                    continue
+
+                audio_format, audio_mime_type = cls._guess_audio_format_and_mime_type(audio_url)
+                prompt_contents.append(
+                    AudioPromptMessageContent(
+                        format=audio_format,
+                        mime_type=audio_mime_type,
+                        url=audio_url,
+                    )
+                )
+                continue
+
+            segment_group = variable_pool.convert_template(content_part.image_url.url)
+            file_contents = cls._extract_file_contents_from_segment_group(
+                segment_group=segment_group,
+                vision_detail_config=vision_detail_config,
+            )
+            if file_contents:
+                prompt_contents.extend(file_contents)
+                continue
+
+            image_url = segment_group.text.strip()
+            if not image_url:
+                continue
+
+            image_format, mime_type = cls._guess_image_format_and_mime_type(image_url)
+            image_detail = (
+                ImagePromptMessageContent.DETAIL.HIGH
+                if content_part.image_url.detail == "high"
+                else ImagePromptMessageContent.DETAIL.LOW
+            )
+            prompt_contents.append(
+                ImagePromptMessageContent(
+                    format=image_format,
+                    mime_type=mime_type,
+                    url=image_url,
+                    detail=image_detail,
+                )
+            )
+
+        return prompt_contents
+
+    @staticmethod
     def handle_list_messages(
         *,
         messages: Sequence[LLMNodeChatModelMessage],
@@ -1089,48 +1276,57 @@ class LLMNode(Node[LLMNodeData]):
                     jinja2_variables=jinja2_variables,
                     variable_pool=variable_pool,
                 )
-                prompt_message = _combine_message_content_with_role(
-                    contents=[TextPromptMessageContent(data=result_text)], role=message.role
+                prompt_contents: list[PromptMessageContentUnionTypes] = []
+                if result_text:
+                    prompt_contents.append(TextPromptMessageContent(data=result_text))
+                prompt_contents.extend(
+                    LLMNode._convert_openai_content_parts_to_contents(
+                        message=message,
+                        context=context,
+                        variable_pool=variable_pool,
+                        vision_detail_config=vision_detail_config,
+                    )
                 )
+                if not prompt_contents:
+                    continue
+                prompt_message = _combine_message_content_with_role(contents=prompt_contents, role=message.role)
                 prompt_messages.append(prompt_message)
             else:
-                # Get segment group from basic message
-                if context:
-                    template = message.text.replace("{#context#}", context)
-                else:
-                    template = message.text
-                segment_group = variable_pool.convert_template(template)
-
-                # Process segments for images
-                file_contents = []
-                for segment in segment_group.value:
-                    if isinstance(segment, ArrayFileSegment):
-                        for file in segment.value:
-                            if file.type in {FileType.IMAGE, FileType.VIDEO, FileType.AUDIO, FileType.DOCUMENT}:
-                                file_content = file_manager.to_prompt_message_content(
-                                    file, image_detail_config=vision_detail_config
-                                )
-                                file_contents.append(file_content)
-                    elif isinstance(segment, FileSegment):
-                        file = segment.value
-                        if file.type in {FileType.IMAGE, FileType.VIDEO, FileType.AUDIO, FileType.DOCUMENT}:
-                            file_content = file_manager.to_prompt_message_content(
-                                file, image_detail_config=vision_detail_config
+                if message.content:
+                    prompt_contents: list[PromptMessageContentUnionTypes] = []
+                    if message.text:
+                        prompt_contents.extend(
+                            LLMNode._convert_template_to_contents(
+                                template=message.text,
+                                context=context,
+                                variable_pool=variable_pool,
+                                vision_detail_config=vision_detail_config,
                             )
-                            file_contents.append(file_content)
-
-                # Create message with text from all segments
-                plain_text = segment_group.text
-                if plain_text:
-                    prompt_message = _combine_message_content_with_role(
-                        contents=[TextPromptMessageContent(data=plain_text)], role=message.role
+                        )
+                    prompt_contents.extend(
+                        LLMNode._convert_openai_content_parts_to_contents(
+                            message=message,
+                            context=context,
+                            variable_pool=variable_pool,
+                            vision_detail_config=vision_detail_config,
+                        )
                     )
+                    if not prompt_contents:
+                        continue
+                    prompt_message = _combine_message_content_with_role(contents=prompt_contents, role=message.role)
                     prompt_messages.append(prompt_message)
+                    continue
 
-                if file_contents:
-                    # Create message with image contents
-                    prompt_message = _combine_message_content_with_role(contents=file_contents, role=message.role)
-                    prompt_messages.append(prompt_message)
+                prompt_contents = LLMNode._convert_template_to_contents(
+                    template=message.text,
+                    context=context,
+                    variable_pool=variable_pool,
+                    vision_detail_config=vision_detail_config,
+                )
+                if not prompt_contents:
+                    continue
+                prompt_message = _combine_message_content_with_role(contents=prompt_contents, role=message.role)
+                prompt_messages.append(prompt_message)
 
         return prompt_messages
 

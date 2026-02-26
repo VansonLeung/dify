@@ -10,6 +10,7 @@ from core.entities.provider_configuration import ProviderConfiguration, Provider
 from core.entities.provider_entities import CustomConfiguration, SystemConfiguration
 from core.model_runtime.entities.common_entities import I18nObject
 from core.model_runtime.entities.message_entities import (
+    AudioPromptMessageContent,
     ImagePromptMessageContent,
     PromptMessage,
     PromptMessageRole,
@@ -482,6 +483,137 @@ def test_handle_list_messages_basic(llm_node):
     assert result[0].content == [TextPromptMessageContent(data="Hello, world")]
 
 
+def test_handle_list_messages_with_openai_content_parts(llm_node):
+    messages = [
+        LLMNodeChatModelMessage(
+            text="",
+            role=PromptMessageRole.USER,
+            edition_type="basic",
+            content=[
+                {
+                    "type": "text",
+                    "text": "Describe this image",
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "https://example.com/test.png",
+                        "detail": "high",
+                    },
+                },
+            ],
+        )
+    ]
+
+    result = llm_node.handle_list_messages(
+        messages=messages,
+        context=None,
+        jinja2_variables=[],
+        variable_pool=llm_node.graph_runtime_state.variable_pool,
+        vision_detail_config=ImagePromptMessageContent.DETAIL.HIGH,
+    )
+
+    assert len(result) == 1
+    assert isinstance(result[0], UserPromptMessage)
+    assert isinstance(result[0].content, list)
+    assert len(result[0].content) == 2
+    assert isinstance(result[0].content[0], TextPromptMessageContent)
+    assert result[0].content[0].data == "Describe this image"
+    assert isinstance(result[0].content[1], ImagePromptMessageContent)
+    assert result[0].content[1].url == "https://example.com/test.png"
+    assert result[0].content[1].detail == ImagePromptMessageContent.DETAIL.HIGH
+
+
+def test_handle_list_messages_with_openai_audio_url_content_parts(llm_node):
+    messages = [
+        LLMNodeChatModelMessage(
+            text="",
+            role=PromptMessageRole.USER,
+            edition_type="basic",
+            content=[
+                {
+                    "type": "audio_url",
+                    "audio_url": {
+                        "url": "https://example.com/test.mp3",
+                    },
+                }
+            ],
+        )
+    ]
+
+    result = llm_node.handle_list_messages(
+        messages=messages,
+        context=None,
+        jinja2_variables=[],
+        variable_pool=llm_node.graph_runtime_state.variable_pool,
+        vision_detail_config=ImagePromptMessageContent.DETAIL.HIGH,
+    )
+
+    assert len(result) == 1
+    assert isinstance(result[0], UserPromptMessage)
+    assert isinstance(result[0].content, list)
+    assert len(result[0].content) == 1
+    assert isinstance(result[0].content[0], AudioPromptMessageContent)
+    assert result[0].content[0].url == "https://example.com/test.mp3"
+
+
+def test_handle_list_messages_with_openai_image_url_variable_selector(llm_node, monkeypatch):
+    monkeypatch.setattr(
+        "core.workflow.nodes.llm.node.file_manager.to_prompt_message_content",
+        lambda _file, image_detail_config: ImagePromptMessageContent(
+            format="png",
+            mime_type="image/png",
+            url="https://example.com/asset.png",
+            detail=image_detail_config,
+        ),
+    )
+
+    file = File(
+        id="1",
+        tenant_id="test",
+        type=FileType.IMAGE,
+        filename="test.png",
+        transfer_method=FileTransferMethod.REMOTE_URL,
+        remote_url="https://example.com/asset.png",
+        extension=".png",
+        mime_type="image/png",
+        related_id="1",
+        storage_key="",
+    )
+    llm_node.graph_runtime_state.variable_pool.add(["input", "image"], file)
+
+    messages = [
+        LLMNodeChatModelMessage(
+            text="",
+            role=PromptMessageRole.USER,
+            edition_type="basic",
+            content=[
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "{{#input.image#}}",
+                        "detail": "low",
+                    },
+                }
+            ],
+        )
+    ]
+
+    result = llm_node.handle_list_messages(
+        messages=messages,
+        context=None,
+        jinja2_variables=[],
+        variable_pool=llm_node.graph_runtime_state.variable_pool,
+        vision_detail_config=ImagePromptMessageContent.DETAIL.HIGH,
+    )
+
+    assert len(result) == 1
+    assert isinstance(result[0], UserPromptMessage)
+    assert isinstance(result[0].content, list)
+    assert len(result[0].content) == 1
+    assert isinstance(result[0].content[0], ImagePromptMessageContent)
+
+
 @pytest.fixture
 def llm_node_for_multimodal(llm_node_data, graph_init_params, graph_runtime_state) -> tuple[LLMNode, LLMFileSaver]:
     mock_file_saver: LLMFileSaver = mock.MagicMock(spec=LLMFileSaver)
@@ -725,3 +857,62 @@ class TestReasoningFormat:
 
         assert clean_text == text_with_think
         assert reasoning_content == ""
+
+
+def test_extract_variable_mapping_from_openai_content_parts():
+    node_data = {
+        "title": "Test LLM",
+        "type": "llm",
+        "model": {
+            "provider": "openai",
+            "name": "gpt-3.5-turbo",
+            "mode": "chat",
+            "completion_params": {},
+        },
+        "prompt_template": [
+            {
+                "role": "user",
+                "text": "",
+                "edition_type": "basic",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "{{#start.query#}}",
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "{{#start.image#}}",
+                        },
+                    },
+                    {
+                        "type": "audio_url",
+                        "audio_url": {
+                            "url": "{{#start.audio#}}",
+                        },
+                    },
+                ],
+            }
+        ],
+        "context": {
+            "enabled": False,
+            "variable_selector": [],
+        },
+        "vision": {
+            "enabled": False,
+            "configs": {
+                "variable_selector": ["sys", "files"],
+                "detail": "high",
+            },
+        },
+    }
+
+    variable_mapping = LLMNode._extract_variable_selector_to_variable_mapping(
+        graph_config={},
+        node_id="llm_1",
+        node_data=node_data,
+    )
+
+    assert "llm_1.#start.query#" in variable_mapping
+    assert "llm_1.#start.image#" in variable_mapping
+    assert "llm_1.#start.audio#" in variable_mapping

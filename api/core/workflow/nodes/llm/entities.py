@@ -1,5 +1,5 @@
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -49,9 +49,42 @@ class PromptConfig(BaseModel):
         return v
 
 
+class OpenAICompatibleChatTextContentPart(BaseModel):
+    type: Literal["text"] = "text"
+    text: str = ""
+
+
+class OpenAICompatibleChatImageURLValue(BaseModel):
+    url: str = ""
+    detail: Literal["auto", "low", "high"] | None = None
+
+
+class OpenAICompatibleChatImageURLContentPart(BaseModel):
+    type: Literal["image_url"] = "image_url"
+    image_url: OpenAICompatibleChatImageURLValue
+
+
+class OpenAICompatibleChatAudioURLValue(BaseModel):
+    url: str = ""
+
+
+class OpenAICompatibleChatAudioURLContentPart(BaseModel):
+    type: Literal["audio_url"] = "audio_url"
+    audio_url: OpenAICompatibleChatAudioURLValue
+
+
+OpenAICompatibleChatContentPart = Annotated[
+    OpenAICompatibleChatTextContentPart
+    | OpenAICompatibleChatImageURLContentPart
+    | OpenAICompatibleChatAudioURLContentPart,
+    Field(discriminator="type"),
+]
+
+
 class LLMNodeChatModelMessage(ChatModelMessage):
     text: str = ""
     jinja2_text: str | None = None
+    content: Sequence[OpenAICompatibleChatContentPart] = Field(default_factory=list)
 
 
 class LLMNodeCompletionModelPromptTemplate(CompletionModelPromptTemplate):

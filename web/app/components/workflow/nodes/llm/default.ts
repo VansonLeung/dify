@@ -27,6 +27,20 @@ const RETRIEVAL_OUTPUT_STRUCT = `{
 
 const i18nPrefix = 'errorMsg'
 
+const hasMultimodalContent = (item: PromptItem) => {
+  if (!item.content || item.content.length === 0)
+    return false
+
+  return item.content.some((part) => {
+    if (part.type === 'text')
+      return !!part.text?.trim()
+    if (part.type === 'audio_url')
+      return !!part.audio_url?.url?.trim()
+
+    return !!part.image_url?.url?.trim()
+  })
+}
+
 const metaData = genNodeMetaData({
   sort: 1,
   type: BlockEnum.LLM,
@@ -68,9 +82,9 @@ const nodeDefault: NodeDefault<LLMNodeType> = {
       const isPromptEmpty = isChatModel
         ? !(payload.prompt_template as PromptItem[]).some((t) => {
             if (t.edition_type === EditionType.jinja2)
-              return t.jinja2_text !== ''
+              return t.jinja2_text !== '' || hasMultimodalContent(t)
 
-            return t.text !== ''
+            return t.text !== '' || hasMultimodalContent(t)
           })
         : ((payload.prompt_template as PromptItem).edition_type === EditionType.jinja2 ? (payload.prompt_template as PromptItem).jinja2_text === '' : (payload.prompt_template as PromptItem).text === '')
       if (isPromptEmpty)
